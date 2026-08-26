@@ -32,6 +32,27 @@ This repository is the canonical home of the script. Versioning is integer
 - Root access (the script re-executes itself via sudo if needed).
 - A domain whose DNS you control.
 
+## Third-party: 3x-ui
+
+The upstream 3x-ui installer is embedded as a git submodule at
+`third_party/3x-ui` so its exact behavior (notably `install.sh`) is readable
+alongside this project rather than guessed. The install script still downloads
+and runs the latest `install.sh` from `raw.githubusercontent.com` at install
+time; the submodule exists for review and to keep tooling consistent with the
+panel installer.
+
+Refresh to the latest upstream with:
+
+```bash
+git submodule update --remote third_party/3x-ui
+```
+
+When cloning this repository, initialize the submodule with:
+
+```bash
+git clone --recurse-submodules https://github.com/salehMomtaz/xinstaller.git
+```
+
 ## Usage
 
 ```bash
