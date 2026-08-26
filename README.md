@@ -1,4 +1,4 @@
-# xui-lite
+# xinstaller
 
 Hardened installer for a production 3x-ui + Nginx + Let's Encrypt setup on
 Ubuntu. Interactive, single-purpose, and opinionated: it wires 3x-ui behind an
@@ -35,7 +35,7 @@ This repository is the canonical home of the script. Versioning is integer
 ## Usage
 
 ```bash
-sudo bash xui-lite.sh
+sudo bash xinstaller.sh
 ```
 
 Follow the prompts:
@@ -54,7 +54,7 @@ Follow the prompts:
 
 - Panel and subscription URLs are printed on the final "save this screen"
   output, including a random base path for the admin panel.
-- Certificate renewal runs daily from `/etc/cron.d/xui-lite`, tolerating
+- Certificate renewal runs daily from `/etc/cron.d/xinstaller`, tolerating
   transient DNS failures.
 
 ## Versioning
@@ -63,7 +63,7 @@ Integer releases. The current version is stored in a single constant in the
 script:
 
 ```bash
-readonly XUI_LITE_VERSION="1"
+readonly XINSTALLER_VERSION="2"
 ```
 
 Every release increments that value, updates the header changelog block, is

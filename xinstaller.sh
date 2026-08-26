@@ -1,10 +1,16 @@
 #!/bin/bash
-########################## xui-lite v1 ########################################
+########################## xinstaller v2 ########################################
 # Hardened 3x-ui + Official Nginx + Let's Encrypt SSL installer (Ubuntu-only, Interactive)
-# Author: qwen 3.7 max (maintained)
+# Author: deepseek-v4-pro-0813
 #
 # Versioning: integer. v1, v2, v3 ... Each bump = one release commit + a git
 #   tag named v<N>. No more semantic-version suffixes (no 5.0.0 / 6.1.0).
+#
+# Changelog v2:
+#   - Project and script renamed from "xui-lite" to "xinstaller". All internal
+#       names, artifact paths (nginx vhost prefix, fakesite prefix, cron file,
+#       maintenance scripts, manifest, log and session files) migrated.
+#   - Author recorded as deepseek-v4-pro-0813 from this release onward.
 #
 # Transport (summary of the current, settled design):
 #   - nginx → xray forwarding is on a TRADITIONAL LOCAL TCP PORT
@@ -35,7 +41,7 @@
 #   - Post-uninstall: nginx is STARTED (not just reloaded) after a valid config restore.
 #
 # Usage:
-#   sudo bash xui-lite.sh
+#   sudo bash xinstaller.sh
 #   (follow the interactive prompts)
 #####################################################################################################
 set -Eeuo pipefail
@@ -46,23 +52,23 @@ trap 'echo "FATAL: command \"${BASH_COMMAND}\" failed at line ${LINENO} with exi
 # ---------------------------------------------------------------- Constants
 readonly XUI_DB_PATH="/etc/x-ui/x-ui.db"
 readonly XUI_PANEL_DIR="/usr/local/x-ui"
-readonly NGINX_VHOST_PREFIX="xui-lite"
+readonly NGINX_VHOST_PREFIX="xinstaller"
 NGINX_VHOST_FILE=""
 NGINX_VHOST_LINK=""
 readonly NGINX_MAIN_CONF="/etc/nginx/nginx.conf"
-readonly NGINX_MAIN_CONF_BACKUP="/etc/nginx/nginx.conf.xui-lite.bak"
-readonly FAKESITE_PREFIX="/var/www/xui-lite-fakesite"
+readonly NGINX_MAIN_CONF_BACKUP="/etc/nginx/nginx.conf.xinstaller.bak"
+readonly FAKESITE_PREFIX="/var/www/xinstaller-fakesite"
 FAKESITE_ROOT=""
-readonly FAKESITE_CACHE="${HOME}/.cache/xui-lite/randomfakehtml-master"
-readonly CRON_FILE="/etc/cron.d/xui-lite"
+readonly FAKESITE_CACHE="${HOME}/.cache/xinstaller/randomfakehtml-master"
+readonly CRON_FILE="/etc/cron.d/xinstaller"
 readonly MAINT_SCRIPT_DIR="/usr/local/sbin"
 readonly MANUAL_AUTH_HOOK="/root/.secrets/certbot/manual-auth-hook.sh"
-readonly ACME_SESSION_FILE="/tmp/xui-lite-acme-tokens"
-readonly XUI_LITE_VERSION="1"
-readonly NGINX_MAINT_SCRIPT="${MAINT_SCRIPT_DIR}/xui-lite-nginx-maintenance.sh"
-readonly RENEW_HOOK_SCRIPT="${MAINT_SCRIPT_DIR}/xui-lite-certbot-hook.sh"
-readonly UPDATE_SCRIPT="${MAINT_SCRIPT_DIR}/xui-lite-system-update.sh"
-readonly MANIFEST_FILE="/var/lib/xui-lite-manifest"
+readonly ACME_SESSION_FILE="/tmp/xinstaller-acme-tokens"
+readonly XINSTALLER_VERSION="2"
+readonly NGINX_MAINT_SCRIPT="${MAINT_SCRIPT_DIR}/xinstaller-nginx-maintenance.sh"
+readonly RENEW_HOOK_SCRIPT="${MAINT_SCRIPT_DIR}/xinstaller-certbot-hook.sh"
+readonly UPDATE_SCRIPT="${MAINT_SCRIPT_DIR}/xinstaller-system-update.sh"
+readonly MANIFEST_FILE="/var/lib/xinstaller-manifest"
 readonly SUPPORTED_UBUNTU_CODENAMES="jammy noble oracular"
 # NOTE: literal double-quote removed from HACK_REGEX to avoid heredoc collision with nginx.
 # URL-encoded quotes (%22) are already covered by the '%' token below.
@@ -335,7 +341,7 @@ echo
 msg_inf ' _     _ _     _ _____     _ _ _       '
 msg_inf '  \___/  |     |   |       | (_) |      '
 msg_inf ' _/   \_ |_____| __|__     | |_| |_ ___ '
-msg_inf "                     L I T E  v${XUI_LITE_VERSION}     "
+msg_inf "                     L I T E  v${XINSTALLER_VERSION}     "
 hrline
 msg "Author: qwen 3.7 max | Ubuntu-only edition | Interactive"
 hrline
@@ -347,8 +353,8 @@ ACTION=""
 while [[ "$ACTION" != "1" && "$ACTION" != "2" ]]; do
     echo
     msg_inf "What do you want to do?"
-    msg     "  1) Install / Reconfigure xui-lite"
-    msg     "  2) Uninstall xui-lite artifacts"
+    msg     "  1) Install / Reconfigure xinstaller"
+    msg     "  2) Uninstall xinstaller artifacts"
     read -rp $'\033[1;32;40m Enter choice [1/2]: \033[0m' ACTION
 done
 
@@ -356,7 +362,7 @@ done
 # UNINSTALL
 # ============================================================
 if [[ "$ACTION" == "2" ]]; then
-    # Discover all xui-lite vhosts
+    # Discover all xinstaller vhosts
     declare -a VHOST_DOMAINS=()
     for f in /etc/nginx/sites-available/${NGINX_VHOST_PREFIX}-*.conf; do
         [[ -f "$f" ]] || continue
@@ -367,17 +373,17 @@ if [[ "$ACTION" == "2" ]]; then
 
     UNINSTALL_MODE=""
     if ((${#VHOST_DOMAINS[@]} == 0)); then
-        msg_war "No xui-lite domain vhosts found — performing full cleanup."
+        msg_war "No xinstaller domain vhosts found — performing full cleanup."
         UNINSTALL_MODE="all"
     elif ((${#VHOST_DOMAINS[@]} == 1)); then
-        msg_inf "Found 1 xui-lite domain: ${VHOST_DOMAINS[0]}"
+        msg_inf "Found 1 xinstaller domain: ${VHOST_DOMAINS[0]}"
         while [[ "$UNINSTALL_MODE" != "y" && "$UNINSTALL_MODE" != "n" ]]; do
             read -rp $'\033[1;32;40m Remove it and all shared artifacts? [y/n]: \033[0m' UNINSTALL_MODE
             UNINSTALL_MODE="${UNINSTALL_MODE,,}"
         done
         [[ "$UNINSTALL_MODE" == "y" ]] && UNINSTALL_MODE="all" || UNINSTALL_MODE="cancel"
     else
-        msg_inf "Found ${#VHOST_DOMAINS[@]} xui-lite domains:"
+        msg_inf "Found ${#VHOST_DOMAINS[@]} xinstaller domains:"
         idx=1
         for d in "${VHOST_DOMAINS[@]}"; do
             msg "  $idx) $d"
@@ -430,7 +436,7 @@ if [[ "$ACTION" == "2" ]]; then
         rm -f "/etc/nginx/sites-enabled/${NGINX_VHOST_PREFIX}-${d}.conf" 2>/dev/null || true
         rm -f "/etc/nginx/sites-available/${NGINX_VHOST_PREFIX}-${d}.conf" 2>/dev/null || true
         rm -f "/etc/nginx/sites-available/${NGINX_VHOST_PREFIX}-${d}.conf.phase1.bak" 2>/dev/null || true
-        rm -rf "/var/www/xui-lite-fakesite-${d}" 2>/dev/null || true
+        rm -rf "/var/www/xinstaller-fakesite-${d}" 2>/dev/null || true
         rm -f "/root/.secrets/certbot/cloudflare-${d}.ini" 2>/dev/null || true
     done
 
@@ -482,7 +488,7 @@ if [[ "$ACTION" == "2" ]]; then
     if command -v x-ui >/dev/null 2>&1 && (( REMAINING_COUNT == 0 )); then
         msg_war "3x-ui is still installed. Run: printf 'y\n' | x-ui uninstall  (if you want it gone)"
     fi
-    msg_ok "xui-lite uninstall complete."
+    msg_ok "xinstaller uninstall complete."
     exit 0
 fi
 
@@ -504,7 +510,7 @@ msg_inf "Main domain: $MAIN_DOMAIN | Target host: $DOMAIN"
 msg_inf "Vhost file: $NGINX_VHOST_FILE"
 LEGACY_VHOST="/etc/nginx/sites-available/${NGINX_VHOST_PREFIX}.conf"
 if [[ -f "$LEGACY_VHOST" ]]; then
-    msg_war "Removing legacy single-file vhost from previous xui-lite version..."
+    msg_war "Removing legacy single-file vhost from previous xinstaller version..."
     rm -f "/etc/nginx/sites-enabled/${NGINX_VHOST_PREFIX}.conf" 2>/dev/null || true
     rm -f "$LEGACY_VHOST" 2>/dev/null || true
     rm -f "${LEGACY_VHOST}.phase1.bak" 2>/dev/null || true
@@ -519,7 +525,7 @@ for f in /etc/nginx/sites-available/${NGINX_VHOST_PREFIX}-*.conf; do
     fi
 done
 if [[ -n "$EXISTING_MAIN_DOMAIN_VHOST" ]]; then
-    msg_war "Another xui-lite vhost already uses MAIN_DOMAIN '$MAIN_DOMAIN':"
+    msg_war "Another xinstaller vhost already uses MAIN_DOMAIN '$MAIN_DOMAIN':"
     msg_war "  $EXISTING_MAIN_DOMAIN_VHOST"
     msg_war "  server_name overlap may cause nginx routing conflicts."
 fi
@@ -679,8 +685,8 @@ ensure_dir "$FAKESITE_ROOT"
 
 if [[ -f /etc/nginx/conf.d/default.conf ]]; then
     if grep -q "listen[[:space:]]*80" /etc/nginx/conf.d/default.conf 2>/dev/null; then
-        mv -f /etc/nginx/conf.d/default.conf /etc/nginx/conf.d/default.conf.xui-lite.disabled
-        record_artifact /etc/nginx/conf.d/default.conf.xui-lite.disabled file
+        mv -f /etc/nginx/conf.d/default.conf /etc/nginx/conf.d/default.conf.xinstaller.disabled
+        record_artifact /etc/nginx/conf.d/default.conf.xinstaller.disabled file
     fi
 fi
 
@@ -688,7 +694,7 @@ if [[ ! -f "$NGINX_MAIN_CONF_BACKUP" && -f "$NGINX_MAIN_CONF" ]]; then
     cp -a "$NGINX_MAIN_CONF" "$NGINX_MAIN_CONF_BACKUP"
 fi
 
-# Remove only the default nginx vhost and this domain's stale link (preserve other xui-lite domains)
+# Remove only the default nginx vhost and this domain's stale link (preserve other xinstaller domains)
 rm -f "/etc/nginx/sites-enabled/default" 2>/dev/null || true
 rm -f "$NGINX_VHOST_LINK" 2>/dev/null || true
 rm -f /etc/nginx/conf.d/default.conf 2>/dev/null || true
@@ -721,7 +727,7 @@ if nginx -t -c "$TMP_MAIN" >/dev/null 2>&1; then
 else
     msg_err "nginx.conf validation failed — possible causes:"
     msg_err "  1. Generated config is invalid (unlikely)"
-    msg_err "  2. Another xui-lite vhost in sites-enabled references missing files (cert, etc.)"
+    msg_err "  2. Another xinstaller vhost in sites-enabled references missing files (cert, etc.)"
     msg_err "  Details:"
     nginx -t -c "$TMP_MAIN" || true
     rm -f "$TMP_MAIN"
@@ -820,9 +826,9 @@ write_manual_auth_hook() {
     cat > "$MANUAL_AUTH_HOOK" <<'EOF'
 #!/bin/bash
 set -u
-LOG=/var/log/xui-lite-certbot-manual-auth.log
+LOG=/var/log/xinstaller-certbot-manual-auth.log
 TTS=/dev/tty
-SESSION=/tmp/xui-lite-acme-tokens
+SESSION=/tmp/xinstaller-acme-tokens
 RESOLVERS="8.8.8.8 1.1.1.1 9.9.9.9"
 exec 3>>"$LOG"    # fd 3 = diagnostic log
 say()  { echo "[$(date -Iseconds)] $*" >&3; }
@@ -993,7 +999,7 @@ EOF
                     break
                 fi
                 if (( _cb_try == 3 )); then
-                    msg_err "Manual DNS-01 issuance failed after 3 attempts — see /var/log/xui-lite-certbot-manual-auth.log."
+                    msg_err "Manual DNS-01 issuance failed after 3 attempts — see /var/log/xinstaller-certbot-manual-auth.log."
                 else
                     msg_war "Issuance attempt $_cb_try failed. Wait ~1 min (NS took a moment), then it will retry."
                     sleep 60
@@ -1324,7 +1330,7 @@ if [[ "$EXISTING_SITE" == "n" ]]; then
             local_basename=$(basename "$f" .conf)
             local_domain="${local_basename#${NGINX_VHOST_PREFIX}-}"
             [[ "$local_domain" == "$DOMAIN" ]] && continue
-            local_meta="${FAKESITE_PREFIX}-${local_domain}/.xui-lite-template"
+            local_meta="${FAKESITE_PREFIX}-${local_domain}/.xinstaller-template"
             if [[ -f "$local_meta" ]]; then
                 USED_TEMPLATES+=("$(cat "$local_meta")")
             fi
@@ -1355,7 +1361,7 @@ if [[ "$EXISTING_SITE" == "n" ]]; then
                 msg_inf "Selected random template: $RandomHTML"
                 find "$FAKESITE_ROOT" -mindepth 1 -delete 2>/dev/null || true
                 cp -a "$RandomHTML"/. "$FAKESITE_ROOT"/
-                printf '%s\n' "$RandomHTML" > "$FAKESITE_ROOT/.xui-lite-template"
+                printf '%s\n' "$RandomHTML" > "$FAKESITE_ROOT/.xinstaller-template"
                 msg_ok "Fake website installed at $FAKESITE_ROOT"
             else
                 msg_war "No template subdirectory found in cache."
@@ -1380,7 +1386,7 @@ ensure_dir "$MAINT_SCRIPT_DIR"
 cat > "$NGINX_MAINT_SCRIPT" <<'EOF'
 #!/bin/bash
 set -u
-LOG=/var/log/xui-lite-nginx-maint.log
+LOG=/var/log/xinstaller-nginx-maint.log
 {
     echo "[$(date -Iseconds)] start"
     if nginx -t -c /etc/nginx/nginx.conf >/dev/null 2>&1; then
@@ -1396,7 +1402,7 @@ chmod 755 "$NGINX_MAINT_SCRIPT"
 cat > "$RENEW_HOOK_SCRIPT" <<'EOF'
 #!/bin/bash
 set -u
-LOG=/var/log/xui-lite-certbot-renew.log
+LOG=/var/log/xinstaller-certbot-renew.log
 {
     echo "[$(date -Iseconds)] post-renew"
     if nginx -t -c /etc/nginx/nginx.conf >/dev/null 2>&1; then
@@ -1411,7 +1417,7 @@ chmod 755 "$RENEW_HOOK_SCRIPT"
 cat > "$UPDATE_SCRIPT" <<'EOF'
 #!/bin/bash
 set -u
-LOG=/var/log/xui-lite-system-update.log
+LOG=/var/log/xinstaller-system-update.log
 {
     echo "[$(date -Iseconds)] start update"
     apt-get update -qq && apt-get upgrade -y -qq
@@ -1422,7 +1428,7 @@ chmod 755 "$UPDATE_SCRIPT"
 
 # ---------------------------------------------------------------- Cron jobs (no daily reboot — not this script's business)
 cat > "$CRON_FILE" <<EOF
-# xui-lite managed cron — DO NOT EDIT (managed by xui-lite.sh v${XUI_LITE_VERSION})
+# xinstaller managed cron — DO NOT EDIT (managed by xinstaller.sh v${XINSTALLER_VERSION})
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 # Daily x-ui restart
@@ -1430,7 +1436,7 @@ PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 # Daily nginx validation + reload
 0 1 * * * root $NGINX_MAINT_SCRIPT
 # DAILY certbot renewal with hook (tolerant of transient failures)
-0 3 * * * root /usr/bin/certbot renew --non-interactive --deploy-hook $RENEW_HOOK_SCRIPT >> /var/log/xui-lite-certbot-renew.log 2>&1
+0 3 * * * root /usr/bin/certbot renew --non-interactive --deploy-hook $RENEW_HOOK_SCRIPT >> /var/log/xinstaller-certbot-renew.log 2>&1
 # Daily system update (10:30)
 30 10 * * * root $UPDATE_SCRIPT
 EOF
@@ -1501,12 +1507,12 @@ if systemctl is-active --quiet x-ui 2>/dev/null || command -v x-ui >/dev/null 2>
     hrline
     msg_ok "Website: https://${DOMAIN}/"
     hrline
-    msg_war "SAVE THIS SCREEN! Installed by xui-lite v${XUI_LITE_VERSION}"
+    msg_war "SAVE THIS SCREEN! Installed by xinstaller v${XINSTALLER_VERSION}"
 else
     nginx -t -c "$NGINX_MAIN_CONF" || true
     printf '0
 ' | x-ui 2>/dev/null | grep --color=never -i ':' || true
-    msg_err "xui-lite: installation error — check logs above."
+    msg_err "xinstaller: installation error — check logs above."
     exit 1
 fi
 
