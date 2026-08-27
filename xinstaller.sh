@@ -21,9 +21,17 @@
 #       A loopback TCP listener is bound by xray itself and cannot be orphaned.
 #       In 3x-ui, set the inbound Listen to 127.0.0.1 and its Port equal to the
 #       <port> segment of the public URL (/<port>/<path>).
-#   - proxy_pass remains mandatory for the Xray location: grpc_pass NEVER works
-#       in front of xray's xhttp server regardless of transport (it speaks plain
-#       HTTP/1.1 + h2c, never gRPC trailers).
+#   - proxy_pass (not grpc_pass) is used for the generic Xray location. This is
+#       a design choice, NOT a protocol limitation: grpc_pass also works in
+#       front of xray's xhttp server (it speaks plain HTTP/1.1 + h2c — see
+#       XTLS/Xray-core transport/internet/splithttp/hub.go: SetHTTP1(true) +
+#       SetUnencryptedHTTP2(true), "server can handle both plaintext HTTP/1.1
+#       and h2c" — and the upstream XHTTP doc itself recommends grpc_pass for
+#       nginx). But grpc_pass is HTTP/2-only upstream and cannot carry
+#       WebSocket/HTTPUpgrade inbounds, while this location is a generic
+#       /<port>/<path> catch-all. proxy_pass with buffering disabled carries
+#       all xhttp modes (packet-up, stream-up, stream-one) plus ws/httpupgrade.
+#       A real gRPC-transport inbound would need its own grpc_pass location.
 #   - Admin panel + /sub/ + /json/ subscription paths remain on TCP loopback.
 #
 # Features (accumulated into v1 baseline):
@@ -661,7 +669,7 @@ msg_inf "Transport mode: nginx → xray over a TRADITIONAL LOCAL TCP PORT (loopb
 msg_war "In 3x-ui panel, for each Xray inbound, set Listen to: 127.0.0.1"
 msg_war "and set the inbound Port equal to the <port> in the public URL /<port>/<path>."
 msg_war "Only the main Xray inbound uses this port. Panel + /sub/ + /json/ stay on their own TCP loopback ports."
-msg_war "All xhttp modes (packet-up, stream-up, stream-down) are supported. Never use grpc_pass in front of xray."
+msg_war "All xhttp modes (packet-up, stream-up, stream-one) are supported via proxy_pass."
 
 # ---------------------------------------------------------------- Free 80/443 (graceful)
 free_http_ports
@@ -1149,18 +1157,28 @@ SUB_PROXY='proxy_pass http://127.0.0.1:$fwdport/sub/$fwdpath$is_args$args;'
 JSON_PROXY='proxy_pass http://127.0.0.1:$fwdport/json/$fwdpath$is_args$args;'
 
 # Xray traffic → traditional local TCP port (GFW4Fun/x-ui-pro style)
-# Always use proxy_pass here. grpc_pass does NOT work in front of xray.
+# Use proxy_pass here. NOTE: this is a design choice, not a protocol limit —
+# grpc_pass DOES work in front of xray's xhttp server (it speaks HTTP/1.1 +
+# h2c; see XTLS/Xray-core transport/internet/splithttp/hub.go SetHTTP1(true) +
+# SetUnencryptedHTTP2(true); the upstream XHTTP doc recommends grpc_pass for
+# nginx; XTLS/Xray-core#6444 ran grpc_pass → xray xhttp successfully).
 #
-# Why not grpc_pass: The xhttp docs recommend grpc_pass for stream-up mode, but
-# that assumes xray handles TLS directly on a public TCP port (the docs'
-# "default" architecture). In our setup nginx terminates TLS on public ports
-# and forwards plain HTTP to xray, whose xhttp server speaks HTTP/1.1 + h2c,
-# NOT gRPC. nginx's grpc_pass module expects gRPC responses with trailers
-# (grpc-status) — xray never sends them, so nginx times out with
-# "upstream timed out (110)". The Content-Type: application/grpc header that
-# stream-up sends is just camouflage for middleboxes (CDNs, DPI); xray's xhttp
-# server recognizes the protocol from the path pattern, not Content-Type.
-# proxy_pass therefore works for ALL modes: packet-up, stream-up, stream-down.
+# Why proxy_pass anyway:
+#   - This location is a generic /<port>/<path> catch-all that must also carry
+#       WebSocket/HTTPUpgrade inbounds (Upgrade/Connection headers below).
+#       grpc_pass is HTTP/2-only upstream and cannot carry those.
+#   - The failure the XHTTP doc's "switch to grpc_pass" hint fixes is nginx's
+#       DEFAULT request buffering stalling stream-up's streaming POST. We fix
+#       that root cause directly below: proxy_request_buffering off,
+#       proxy_buffering off, client_max_body_size 0, long timeouts — so
+#       proxy_pass carries packet-up, stream-up and stream-one fine.
+#   - The Content-Type: application/grpc header stream-up sends is just
+#       camouflage for middleboxes (CDNs, DPI); xray's xhttp server recognizes
+#       the protocol from the path pattern, not Content-Type, so plain
+#       HTTP/1.1 forwarding is fine.
+#   - The one thing proxy_pass cannot carry is a real gRPC-transport inbound
+#       (gRPC needs end-to-end HTTP/2); that would need a dedicated grpc_pass
+#       location.
 #
 # Why TCP loopback instead of a UDS (/dev/shm/port-XXXX.sock):
 #   - Traditional local TCP ports are the battle-tested default of the
@@ -1174,7 +1192,7 @@ JSON_PROXY='proxy_pass http://127.0.0.1:$fwdport/json/$fwdpath$is_args$args;'
 #     www-data could connect; TCP needs nothing.
 #   - Performance difference on loopback is negligible for proxy workloads.
 #
-# See: /home/dev/mimo/xhttp-nginx-uds-analysis.md for full evidence and flowcharts.
+# See: /home/dev/mimo/XHTTP-KNOWLEDGE-BASE-FINAL.md (§5.1) for test history.
 XRAY_BLOCK='        proxy_pass http://127.0.0.1:$fwdport;'
 
 TMP_VHOST2=$(mktemp)
