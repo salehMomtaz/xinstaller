@@ -21,17 +21,14 @@
 #       A loopback TCP listener is bound by xray itself and cannot be orphaned.
 #       In 3x-ui, set the inbound Listen to 127.0.0.1 and its Port equal to the
 #       <port> segment of the public URL (/<port>/<path>).
-#   - proxy_pass (not grpc_pass) is used for the generic Xray location. This is
-#       a design choice, NOT a protocol limitation: grpc_pass also works in
-#       front of xray's xhttp server (it speaks plain HTTP/1.1 + h2c — see
-#       XTLS/Xray-core transport/internet/splithttp/hub.go: SetHTTP1(true) +
-#       SetUnencryptedHTTP2(true), "server can handle both plaintext HTTP/1.1
-#       and h2c" — and the upstream XHTTP doc itself recommends grpc_pass for
-#       nginx). But grpc_pass is HTTP/2-only upstream and cannot carry
-#       WebSocket/HTTPUpgrade inbounds, while this location is a generic
-#       /<port>/<path> catch-all. proxy_pass with buffering disabled carries
-#       all xhttp modes (packet-up, stream-up, stream-one) plus ws/httpupgrade.
-#       A real gRPC-transport inbound would need its own grpc_pass location.
+#   - The generic Xray location routes by Content-Type (GFW4Fun/x-ui-pro.sh
+#       style): requests carrying a gRPC Content-Type (real gRPC-transport
+#       inbounds, and xhttp stream-up/stream-one whose application/grpc header
+#       is camouflage) go upstream as h2c via grpc_pass; everything else
+#       (ws/httpupgrade, packet-up, plain H1) goes via proxy_pass with
+#       buffering disabled. Both branches may point at the same loopback port:
+#       xray's xhttp listener speaks HTTP/1.1 AND h2c simultaneously
+#       (SetHTTP1(true) + SetUnencryptedHTTP2(true)).
 #   - Admin panel + /sub/ + /json/ subscription paths remain on TCP loopback.
 #
 # Features (accumulated into v1 baseline):
@@ -669,7 +666,8 @@ msg_inf "Transport mode: nginx → xray over a TRADITIONAL LOCAL TCP PORT (loopb
 msg_war "In 3x-ui panel, for each Xray inbound, set Listen to: 127.0.0.1"
 msg_war "and set the inbound Port equal to the <port> in the public URL /<port>/<path>."
 msg_war "Only the main Xray inbound uses this port. Panel + /sub/ + /json/ stay on their own TCP loopback ports."
-msg_war "All xhttp modes (packet-up, stream-up, stream-one) are supported via proxy_pass."
+msg_war "All xhttp modes (packet-up, stream-up, stream-one), ws/httpupgrade AND real gRPC-transport inbounds are supported."
+msg_war "Routing: gRPC Content-Type → grpc_pass (h2c); everything else → proxy_pass (HTTP/1.1)."
 
 # ---------------------------------------------------------------- Free 80/443 (graceful)
 free_http_ports
@@ -1157,28 +1155,31 @@ SUB_PROXY='proxy_pass http://127.0.0.1:$fwdport/sub/$fwdpath$is_args$args;'
 JSON_PROXY='proxy_pass http://127.0.0.1:$fwdport/json/$fwdpath$is_args$args;'
 
 # Xray traffic → traditional local TCP port (GFW4Fun/x-ui-pro style)
-# Use proxy_pass here. NOTE: this is a design choice, not a protocol limit —
-# grpc_pass DOES work in front of xray's xhttp server (it speaks HTTP/1.1 +
-# h2c; see XTLS/Xray-core transport/internet/splithttp/hub.go SetHTTP1(true) +
-# SetUnencryptedHTTP2(true); the upstream XHTTP doc recommends grpc_pass for
-# nginx; XTLS/Xray-core#6444 ran grpc_pass → xray xhttp successfully).
+# Hybrid routing by Content-Type (as in the x-ui-pro base):
+#   if ($content_type ~* "GRPC") { grpc_pass grpc://127.0.0.1:$fwdport; break; }
+#   proxy_pass http://127.0.0.1:$fwdport;
 #
-# Why proxy_pass anyway:
-#   - This location is a generic /<port>/<path> catch-all that must also carry
-#       WebSocket/HTTPUpgrade inbounds (Upgrade/Connection headers below).
-#       grpc_pass is HTTP/2-only upstream and cannot carry those.
-#   - The failure the XHTTP doc's "switch to grpc_pass" hint fixes is nginx's
-#       DEFAULT request buffering stalling stream-up's streaming POST. We fix
-#       that root cause directly below: proxy_request_buffering off,
-#       proxy_buffering off, client_max_body_size 0, long timeouts — so
-#       proxy_pass carries packet-up, stream-up and stream-one fine.
-#   - The Content-Type: application/grpc header stream-up sends is just
-#       camouflage for middleboxes (CDNs, DPI); xray's xhttp server recognizes
-#       the protocol from the path pattern, not Content-Type, so plain
-#       HTTP/1.1 forwarding is fine.
-#   - The one thing proxy_pass cannot carry is a real gRPC-transport inbound
-#       (gRPC needs end-to-end HTTP/2); that would need a dedicated grpc_pass
-#       location.
+# Why both branches:
+#   - grpc_pass speaks HTTP/2 upstream, which is REQUIRED for real
+#       gRPC-transport inbounds (gRPC needs end-to-end h2) and is the path the
+#       upstream XHTTP doc recommends for nginx (XTLS/Xray-core#6444 ran
+#       grpc_pass → xray xhttp successfully). Its Content-Type match also
+#       catches xhttp stream-up/stream-one, whose application/grpc header is
+#       camouflage — xray's xhttp server recognizes its protocol from the
+#       path pattern, not Content-Type, so both work over either branch.
+#   - proxy_pass (H1.1, buffering disabled) carries everything else:
+#       WebSocket/HTTPUpgrade inbounds (grpc_pass is HTTP/2-only upstream and
+#       cannot carry those) plus packet-up — the verified path for all xhttp
+#       modes. proxy_request_buffering off / proxy_buffering off /
+#       client_max_body_size 0 / long timeouts fix exactly the failure the
+#       XHTTP doc's "switch to grpc_pass" hint targets (default request
+#       buffering stalling stream-up's streaming POST).
+#   - Both branches point at the same loopback port: xray's xhttp listener
+#       accepts HTTP/1.1 and h2c simultaneously (SetHTTP1(true) +
+#       SetUnencryptedHTTP2(true); see transport/internet/splithttp/hub.go).
+#   - grpc_pass is used WITHOUT a URI suffix (x-ui-pro appends $is_args$args,
+#       which drops the path when a query string is present): with no URI,
+#       nginx passes the original request URI as the :path pseudo-header.
 #
 # Why TCP loopback instead of a UDS (/dev/shm/port-XXXX.sock):
 #   - Traditional local TCP ports are the battle-tested default of the
@@ -1275,10 +1276,15 @@ server {
     }
 
     # Main Xray traffic — traditional local TCP port
+    # Content-Type routing: gRPC requests (real gRPC-transport inbounds +
+    # xhttp stream-up/stream-one camouflage) → grpc_pass h2c; the rest
+    # (ws/httpupgrade, packet-up, plain H1) → proxy_pass.
     location ~ ^/(?<fwdport>\\d+)/(?<fwdpath>.*)\$ {
         if (\$hack = 1) { return 404; }
         client_max_body_size 0;
         client_body_timeout 1d;
+        grpc_read_timeout 1d;
+        grpc_socket_keepalive on;
         proxy_read_timeout 1d;
         proxy_http_version 1.1;
         proxy_buffering off;
@@ -1289,6 +1295,7 @@ server {
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        if (\$content_type ~* "GRPC") { grpc_pass grpc://127.0.0.1:\$fwdport; break; }
         $XRAY_BLOCK
         break;
     }
@@ -1501,6 +1508,8 @@ if systemctl is-active --quiet x-ui 2>/dev/null || command -v x-ui >/dev/null 2>
     msg_war "     • Example: client connects to https://domain/29117/zigen"
     msg_war "       → that inbound must listen on 127.0.0.1:29117."
     msg_war "     • Admin panel + /sub/ + /json/ subscription paths stay on their own ports."
+    msg_war "     • Real gRPC-transport inbounds work through the same /<port>/<path> URL"
+    msg_war "       (gRPC Content-Type is auto-routed via grpc_pass — no extra config)."
 
     hrline
     msg_err "3x-ui Admin Panel (via nginx reverse proxy — recommended):"
